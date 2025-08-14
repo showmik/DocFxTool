@@ -5,10 +5,13 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 using UnityEditor;
+#if UNITY_2021_2_OR_NEWER
 using UnityEditor.Build;
+#endif
 using UnityEditor.Compilation;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
+using System.Reflection;
 
 namespace TTT.Editor
 {
@@ -52,24 +55,54 @@ namespace TTT.Editor
         [MenuItem("Tools/DocFX Tool/2) Recompile all (emit XML now)")]
         public static void ForceFullRecompile()
         {
+            const string Prefix = "FORCE_DOCFX_RECOMPILE";
+            string flag = $"{Prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}"; // always new -> forces recompile
+
 #if UNITY_2021_2_OR_NEWER
-            var nbt = NamedBuildTarget.FromBuildTargetGroup(EditorUserBuildSettings.selectedBuildTargetGroup);
-            var defines = PlayerSettings.GetScriptingDefineSymbols(nbt);
-            const string Flag = "FORCE_DOCFX_RECOMPILE";
-            var parts = defines.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (!parts.Contains(Flag)) parts.Add(Flag); else { parts.RemoveAll(d => d == Flag); parts.Add(Flag); }
-            PlayerSettings.SetScriptingDefineSymbols(nbt, string.Join(";", parts));
+            var targets = new HashSet<NamedBuildTarget>();
+
+            // Always include Standalone and the currently selected group
+            targets.Add(NamedBuildTarget.Standalone);
+            targets.Add(NamedBuildTarget.FromBuildTargetGroup(EditorUserBuildSettings.selectedBuildTargetGroup));
+
+            // Try to include the Editor named target if this Unity version has it
+            var editorProp = typeof(NamedBuildTarget).GetProperty("Editor", BindingFlags.Public | BindingFlags.Static);
+            if (editorProp != null)
+                targets.Add((NamedBuildTarget)editorProp.GetValue(null));
+
+            foreach (var nbt in targets)
+            {
+                var defines = PlayerSettings.GetScriptingDefineSymbols(nbt);
+                var parts = defines.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                                   .Where(d => !d.StartsWith(Prefix, StringComparison.Ordinal))
+                                   .ToList();
+                parts.Add(flag);
+                PlayerSettings.SetScriptingDefineSymbols(nbt, string.Join(";", parts));
+            }
 #else
-            var group = EditorUserBuildSettings.selectedBuildTargetGroup;
-            var defines = PlayerSettings.GetScriptingDefineSymbolsForGroup(group);
-            const string Flag = "FORCE_DOCFX_RECOMPILE";
-            var parts = defines.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (!parts.Contains(Flag)) parts.Add(Flag); else { parts.RemoveAll(d => d == Flag); parts.Add(Flag); }
-            PlayerSettings.SetScriptingDefineSymbolsForGroup(group, string.Join(";", parts));
+    var groups = new HashSet<BuildTargetGroup>
+    {
+        BuildTargetGroup.Standalone,
+        EditorUserBuildSettings.selectedBuildTargetGroup
+    };
+
+    foreach (var g in groups.Where(g => g != BuildTargetGroup.Unknown))
+    {
+        var defines = PlayerSettings.GetScriptingDefineSymbolsForGroup(g);
+        var parts = defines.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                           .Where(d => !d.StartsWith(Prefix, StringComparison.Ordinal))
+                           .ToList();
+        parts.Add(flag);
+        PlayerSettings.SetScriptingDefineSymbolsForGroup(g, string.Join(";", parts));
+    }
 #endif
-            AssetDatabase.Refresh();
-            Debug.Log("DocFX: forcing full recompile…");
+
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+            AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
+            Debug.Log($"DocFX: forced full recompile via define '{flag}'.");
         }
+
+
 
         // ------- 3) Build DocFX (metadata + build) -------
         [MenuItem("Tools/DocFX Tool/3) Build DocFX (metadata + build)")]
@@ -204,30 +237,41 @@ namespace TTT.Editor
 
         private static void SafeCleanDirectoryPreservingGit(string root)
         {
+            var rootFull = Path.GetFullPath(root);
+            var docsFull = Path.GetFullPath(Path.Combine(GetProjectRoot(), "Docs"));
+            if (!rootFull.StartsWith(docsFull, StringComparison.OrdinalIgnoreCase) ||
+                !rootFull.EndsWith("-doc-site", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Refusing to clean suspicious path: {rootFull}");
+            }
+
             var preserve = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { ".git", ".gitignore", "CNAME", "README.md", ".gitattributes" };
+        { ".git", ".gitignore", "CNAME", "README.md", ".gitattributes" };
 
             foreach (var dir in Directory.GetDirectories(root))
-            {
-                var name = Path.GetFileName(dir);
-                if (!preserve.Contains(name)) Directory.Delete(dir, true);
-            }
+                if (!preserve.Contains(Path.GetFileName(dir))) Directory.Delete(dir, true);
+
             foreach (var file in Directory.GetFiles(root))
-            {
-                var name = Path.GetFileName(file);
-                if (!preserve.Contains(name)) File.Delete(file);
-            }
+                if (!preserve.Contains(Path.GetFileName(file))) File.Delete(file);
         }
+
+
+        private static bool IsLink(FileSystemInfo f) =>
+    (f.Attributes & FileAttributes.ReparsePoint) != 0;
 
         private static void CopyDirectoryContents(string sourceDir, string destDir, bool overwriteFiles)
         {
             foreach (var dir in Directory.GetDirectories(sourceDir, "*", SearchOption.AllDirectories))
             {
+                var di = new DirectoryInfo(dir);
+                if (IsLink(di)) continue;
                 var rel = dir.Substring(sourceDir.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 Directory.CreateDirectory(Path.Combine(destDir, rel));
             }
             foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
             {
+                var fi = new FileInfo(file);
+                if (IsLink(fi)) continue;
                 var rel = file.Substring(sourceDir.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 var target = Path.Combine(destDir, rel);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -261,13 +305,23 @@ namespace TTT.Editor
                     RedirectStandardError = true,
                     CreateNoWindow = true
                 };
-                using var p = Process.Start(psi);
-                string stdout = p.StandardOutput.ReadToEnd();
-                string stderr = p.StandardError.ReadToEnd();
+
+                var stdout = new System.Text.StringBuilder();
+                var stderr = new System.Text.StringBuilder();
+
+                using var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                p.OutputDataReceived += (s, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+                p.ErrorDataReceived += (s, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+
+                p.Start();
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
                 p.WaitForExit();
 
-                if (!string.IsNullOrEmpty(stdout)) Debug.Log(stdout);
-                if (!string.IsNullOrEmpty(stderr)) Debug.LogWarning(stderr);
+                var outStr = stdout.ToString();
+                var errStr = stderr.ToString();
+                if (!string.IsNullOrEmpty(outStr)) Debug.Log(outStr);
+                if (!string.IsNullOrEmpty(errStr)) Debug.LogWarning(errStr);
 
                 if (p.ExitCode != 0)
                 {
@@ -282,6 +336,7 @@ namespace TTT.Editor
                 return false;
             }
         }
+
     }
 }
 #endif

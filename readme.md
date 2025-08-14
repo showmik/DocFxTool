@@ -32,7 +32,7 @@ Unity sometimes re-compiles only one assembly and “cleans” others → you en
 
 ## Install
 
-1. Copy `DocFxTool.cs` into an **`Editor/`** folder (e.g. `Assets/_Project/_Scripts/Editor/DocFxTool.cs`).
+1. Copy `DocFxTool.cs` into an **`Editor/`** folder (e.g. `Assets/Editor/DocFxTool.cs`).
 2. Install DocFX:
 	```powershell
 	dotnet tool install -g docfx
