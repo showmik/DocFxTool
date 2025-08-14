@@ -63,38 +63,43 @@ docfx serve _site -p 8081
 
 ### Option A — GitHub Pages (branch: `gh-pages`)
 
-1. Create a new empty repo on GitHub (e.g. `taptech-tycoon-docs`).
+1. Create a new empty repo on GitHub (e.g. `your_unity_project-docs`).
 2. From your Unity project:
 
    ```powershell
-   cd Docs/<ProjectName>-doc-site
+   cd Docs/[your_unity_project_name]-doc-site
    git init
    git add -A
    git commit -m "Publish site"
    git branch -M gh-pages
-   git remote add origin https://github.com/showmik/taptech-tycoon-docs.git
+   git remote add origin https://github.com/[your_github_handle]/your_unity_project-docs.git
    git push -u origin gh-pages
    ```
 3. GitHub → **Settings → Pages** → Source: **`gh-pages`** / **root**.
 
-Your site: `https://showmik.github.io/taptech-tycoon-docs/`
+Your site: `https://[your_github_handle].github.io/your_unity_project-docs/`
 
 ### Option B — Netlify (no build needed)
 
-* **Drag-and-drop:** upload the `Docs/<ProjectName>-doc-site` folder.
+* **Drag-and-drop:** upload the `Docs/[your_unity_project_name]-doc-site` folder.
 * **Or connect the repo:** Build command: **none**, Publish directory: **/** (root).
 
 ---
 
 ## Minimal `docfx.json` (Unity assemblies mode)
 
+Use your asmdef/DLL **prefix** (e.g., `YourGame` → `YourGame.*.dll`). This pulls only your game code.
+
 ```json
 {
   "metadata": [
     {
       "src": [
-        { "src": "../Library/ScriptAssemblies",
-          "files": [ "YourGame.Core.dll", "YourGame.Gameplay.dll", "YourGame.UI.dll" ] }
+        {
+          "src": "../Library/ScriptAssemblies",
+          "files": [ "YOUR_PREFIX.*.dll" ],
+          "exclude": [ "*Editor*.dll", "*Tests*.dll" ]
+        }
       ],
       "dest": "api",
       "filter": "filterConfig.yml"
@@ -112,5 +117,58 @@ Your site: `https://showmik.github.io/taptech-tycoon-docs/`
   }
 }
 ```
+
+* Replace `YOUR_PREFIX` with your asmdef prefix (for you: `TTT` → `TTT.*.dll`).
+* This avoids documenting third-party DLLs and Unity internals.
+* Editor/tests are excluded by default. If you **do** want editor APIs, add `"TTT.Editor.dll"` explicitly in `files` and remove it from `exclude`.
+
+## Generic (include all, exclude obvious third-party)
+
+If your assemblies don’t share a neat prefix, include everything under `ScriptAssemblies` and exclude the noisy bits:
+
+```json
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "src": "../Library/ScriptAssemblies",
+          "files": [ "*.dll" ],
+          "exclude": [
+            "*Editor*.dll", "*Tests*.dll",
+            "Sirenix.*.dll", "System.*.dll", "Microsoft.*.dll", "Unity.*.dll", "netstandard.dll"
+          ]
+        }
+      ],
+      "dest": "api",
+      "filter": "filterConfig.yml"
+    }
+  ],
+  "build": {
+    "content": [
+      { "files": [ "index.md", "articles/**.md", "api/**.md", "toc.yml" ] },
+      { "files": [ "api/**.yml" ] }
+    ],
+    "template": [ "default" ],
+    "dest": "_site",
+    "globalMetadata": { "_appTitle": "YourGame — API", "_enableSearch": true },
+    "xref": []
+  }
+}
+```
+
+Tweak the `exclude` list to taste (keep third-party libs out of “files” and put them in `references` if DocFX needs them for symbol resolution).
+
+## Special cases
+
+* **No asmdefs (single project):** use `"files": [ "Assembly-CSharp.dll" ]` (and `Assembly-CSharp-Editor.dll` if you want editor APIs).
+* **Need Odin/Burst types for references only:** add **references** (not files), e.g.:
+
+  ```json
+  "references": [
+    { "src": "../Assets/Plugins/Sirenix/Assemblies/NoEmitAndNoEditor", "files": [ "*.dll" ] },
+    { "src": "../Library", "files": [ "**/Unity.Burst.Unsafe.dll" ] }
+  ]
+  ```
 
 Add your custom theme via `"template": ["default", "templates/your-theme"]` if needed.
